@@ -6,12 +6,26 @@ from celery import shared_task
 from celery.signals import worker_shutting_down
 
 from bots.bot_controller import BotController
+from bots.models import Bot, BotStates
 
 logger = logging.getLogger(__name__)
+
+# States in which a redelivered / duplicate run_bot task must be a no-op. With
+# CELERY_TASK_ACKS_LATE, a worker restart redelivers the task for a bot that has
+# already finished; rerunning the controller overwrites its uploaded recording
+# with an empty file (issue #587).
+TERMINAL_STATES = (BotStates.ENDED, BotStates.FATAL_ERROR, BotStates.DATA_DELETED)
 
 
 @shared_task(bind=True, soft_time_limit=3600)
 def run_bot(self, bot_id):
+    bot = Bot.objects.filter(id=bot_id).first()
+    if bot is None:
+        logger.warning(f"run_bot called for nonexistent bot {bot_id}, ignoring")
+        return
+    if bot.state in TERMINAL_STATES:
+        logger.warning(f"run_bot called for bot {bot_id} in terminal state {BotStates(bot.state).label}; ignoring to avoid clobbering its artifacts (issue #587)")
+        return
     logger.info(f"Running bot {bot_id}")
     bot_controller = BotController(bot_id)
     bot_controller.run()

@@ -147,11 +147,12 @@ class ScreenAndAudioRecorder:
         if input_path is None:
             return
 
-        # Check if input file exists
+        # Check if input file exists. Do NOT fabricate an empty file here: if this
+        # cleanup runs for a bot whose recording was already uploaded (e.g. a
+        # redelivered task after a worker restart), the empty file would be
+        # uploaded over the real recording in object storage (issue #587).
         if not os.path.exists(input_path):
-            logger.info(f"Input file does not exist at {input_path}, creating empty file")
-            with open(input_path, "wb"):
-                pass  # Create empty file
+            logger.warning(f"Input file does not exist at {input_path}; skipping so no empty file can overwrite a previously uploaded recording (issue #587)")
             return
 
         # if audio only, we don't need to make it seekable
