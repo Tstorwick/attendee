@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from datetime import timedelta
 
 import docker
 from django.conf import settings
@@ -10,7 +11,7 @@ from django.utils import timezone
 from kubernetes import client, config
 
 from bots.k8s_utils import retrieve_bot_pod_information
-from bots.models import Bot, BotEventManager, BotEventSubTypes, BotEventTypes
+from bots.models import Bot, BotEventManager, BotEventSubTypes, BotEventTypes, BotStates
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +107,35 @@ class Command(BaseCommand):
         self.terminate_bots_with_heartbeat_timeout()
         self.terminate_bots_with_global_runtime_timeout()
         self.terminate_bots_that_never_launched()
+        self.terminate_bots_stuck_in_leaving()
+
+    def terminate_bots_stuck_in_leaving(self):
+        """Terminate bots stuck in LEAVING (issue #950).
+
+        The transition out of LEAVING depends on the worker reporting that the
+        meeting ended. If the worker/adapter hangs while still heartbeating, the
+        heartbeat sweep never fires and the bot stays in LEAVING forever. Treat
+        "in LEAVING with no new event for BOT_LEAVING_TIMEOUT_SECONDS" as fatal.
+        """
+        logger.info("Terminating bots stuck in leaving state...")
+        leaving_timeout_seconds = int(os.getenv("BOT_LEAVING_TIMEOUT_SECONDS", "600"))
+        cutoff = timezone.now() - timedelta(seconds=leaving_timeout_seconds)
+
+        try:
+            problem_bots = Bot.objects.filter(state=BotStates.LEAVING).annotate(last_event_at=models.Max("bot_events__created_at")).filter(last_event_at__lt=cutoff)
+
+            logger.info(f"Found {problem_bots.count()} bots stuck in leaving")
+
+            for bot in problem_bots:
+                try:
+                    logger.info(f"Terminating bot {bot.object_id} stuck in leaving since {bot.last_event_at} (limit: {leaving_timeout_seconds}s, issue #950)")
+                    self.terminate_bot(bot, BotEventSubTypes.FATAL_ERROR_HEARTBEAT_TIMEOUT)
+                except Exception as e:
+                    logger.error(f"Failed to terminate bot {bot.object_id}: {str(e)}")
+
+            logger.info("Finished terminating bots stuck in leaving")
+        except Exception as e:
+            logger.error(f"Failed to terminate bots stuck in leaving: {str(e)}")
 
     def terminate_bots_with_global_runtime_timeout(self):
         logger.info("Terminating bots with global runtime timeout...")
