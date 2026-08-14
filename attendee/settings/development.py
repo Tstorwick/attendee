@@ -3,7 +3,10 @@ import os
 from .base import *
 
 DEBUG = True
-SITE_DOMAIN = "localhost:8000"
+# Overridable so self-hosted dev-mode deployments behind a reverse proxy can point
+# bot SSO flows (which navigate to https://SITE_DOMAIN in the bot's browser) at a
+# publicly reachable hostname.
+SITE_DOMAIN = os.getenv("SITE_DOMAIN", "localhost:8000")
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "localhost").split(",")
 
 DATABASES = {
